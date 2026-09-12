@@ -341,6 +341,42 @@ def segment_leaf(img_bgr):
     return cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
 
 
+def is_leaf_present(img_bgr, min_vegetation_fraction=0.12):
+    """
+    Classical-CV gate to reject clearly non-leaf images BEFORE classification.
+    A closed-set classifier (38 disease classes) will always output its best guess even
+    for a photo of a wall, a face, or a blank image — it has no built-in "none of these"
+    option. This heuristic checks whether the image actually contains plausible plant
+    material at all, using two independent signals combined.
+
+    Returns: (is_leaf: bool, vegetation_fraction: float, reason: str)
+    """
+    h, w = img_bgr.shape[:2]
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    hue, sat = hsv[:, :, 0], hsv[:, :, 1]
+
+    # Signal A — color: fraction of pixels plausibly "vegetation-colored".
+    # Broad on purpose: covers healthy green through diseased brown/yellow/tan tissue,
+    # not just healthy leaf color, since a diseased leaf is still a leaf.
+    green_range = (hue >= 25) & (hue <= 95) & (sat >= 40)
+    brown_tan_range = (hue >= 8) & (hue <= 30) & (sat >= 30) & (sat <= 200)
+    vegetation_mask = green_range | brown_tan_range
+    vegetation_fraction = np.count_nonzero(vegetation_mask) / (h * w)
+
+    if vegetation_fraction < min_vegetation_fraction:
+        return False, vegetation_fraction, "Not enough plant-colored (green/brown) area detected in the image."
+
+    # Signal B — segmentation sanity: GrabCut should find a distinct foreground object
+    # that's neither ~0% nor ~100% of the frame. A degenerate mask (all-or-nothing) means
+    # GrabCut couldn't isolate anything object-like, which is typical of non-leaf photos.
+    leaf_mask = segment_leaf(img_bgr)
+    leaf_fraction = np.count_nonzero(leaf_mask) / (h * w)
+    if leaf_fraction < 0.03 or leaf_fraction > 0.98:
+        return False, vegetation_fraction, "Could not isolate a distinct leaf-shaped object in the image."
+
+    return True, vegetation_fraction, ""
+
+
 def estimate_severity(img_bgr, boxes_xyxy):
     leaf_mask = segment_leaf(img_bgr)
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
@@ -718,6 +754,20 @@ if input_image is not None:
     with left:
         st.image(input_image, caption="Input image", use_container_width=True)
 
+    # --- Leaf-presence gate: check BEFORE running the classifier ---
+    _img_bgr_check = cv2.cvtColor(np.array(input_image.convert("RGB")), cv2.COLOR_RGB2BGR)
+    _leaf_ok, _veg_fraction, _reject_reason = is_leaf_present(_img_bgr_check)
+
+    if not _leaf_ok:
+        with right:
+            st.error(
+                "**No leaf detected in this image.**\n\n"
+                f"{_reject_reason}\n\n"
+                "Please upload or capture a clear, well-lit photo of a single plant leaf, "
+                "ideally filling most of the frame against a plain background."
+            )
+        st.stop()
+
     def pipeline_step(icon, text):
         st.markdown(f'<div class="pipeline-step"><i class="bi bi-{icon}"></i>{text}</div>', unsafe_allow_html=True)
 
@@ -757,6 +807,14 @@ if input_image is not None:
         status.update(label="Analysis complete", state="complete", expanded=False)
 
     is_healthy = "healthy" in disease.lower()
+
+    if confidence < 40:
+        st.warning(
+            f"The model's confidence for this prediction is low ({confidence:.1f}%). "
+            "This can happen with unclear photos, unusual angles, or leaves affected by "
+            "a condition outside the 38 classes this model was trained on. Treat this "
+            "result as tentative."
+        )
 
     with right:
         st.markdown(f"""
