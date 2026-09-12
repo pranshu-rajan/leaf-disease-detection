@@ -95,11 +95,29 @@ git push -u origin main
 2. Click **New app**.
 3. Select your repository, the `main` branch, and set the main file path
    to `app.py`.
-4. Open **Advanced settings → Secrets** and paste the contents of your
-   local `.streamlit/secrets.toml` (your Groq key, and the model URL
-   secrets if using Option A above).
-5. Click **Deploy**. The first build installs PyTorch/Ultralytics and can
+4. Open **Advanced settings**. In the **"Python version"** dropdown,
+   explicitly select **3.11** or **3.12** (see note below — don't skip
+   this).
+5. In the **Secrets** field, paste the contents of your local
+   `.streamlit/secrets.toml` (your Groq key, and the model URL secrets if
+   using Option A above).
+6. Click **Deploy**. The first build installs PyTorch/Ultralytics and can
    take several minutes.
+
+### Important: `runtime.txt` is currently unreliable
+
+Streamlit Community Cloud has a known, currently-unresolved bug where
+`runtime.txt` gets ignored and the platform defaults to a very new Python
+version (3.13/3.14 as of late 2026) regardless of what's in the file. This
+breaks `torch`, since PyTorch only ships wheels for recent Python
+releases — an older pinned `torch` version simply won't have a matching
+build. This repo's `runtime.txt` is kept as a hint, but **you must also
+select the Python version explicitly in the "Advanced settings" dropdown
+when you deploy** — that's the setting that's actually respected.
+
+If you've already deployed and it's stuck on the wrong Python version, you
+can't change it in place: delete the app and redeploy, picking the
+version in Advanced settings this time.
 
 ## Notes
 
