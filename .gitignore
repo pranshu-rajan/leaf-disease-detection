@@ -1,0 +1,20 @@
+# Secrets 
+.streamlit/secrets.toml
+ 
+# Model weights (large binaries)
+models/*.pth
+models/*.pt
+ 
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+app_env/
+*.egg-info/
+ 
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
