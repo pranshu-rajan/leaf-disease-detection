@@ -341,13 +341,21 @@ def segment_leaf(img_bgr):
     return cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
 
 
-def is_leaf_present(img_bgr, min_vegetation_fraction=0.12):
+_face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+def is_leaf_present(img_bgr, min_green_fraction=0.05, min_vegetation_fraction=0.12):
     """
     Classical-CV gate to reject clearly non-leaf images BEFORE classification.
     A closed-set classifier (38 disease classes) will always output its best guess even
     for a photo of a wall, a face, or a blank image — it has no built-in "none of these"
     option. This heuristic checks whether the image actually contains plausible plant
-    material at all, using two independent signals combined.
+    material at all.
+
+    IMPORTANT FIX: an earlier version allowed a broad brown/tan color range (meant to catch
+    diseased/dried leaf tissue) to qualify on its own — but that range heavily overlaps with
+    human skin tone and beige surfaces (wallpaper, walls), which let selfies and room photos
+    pass as "leaf detected". Genuine green presence is now a hard requirement, and an explicit
+    face-detection veto catches the skin-tone-overlap case directly.
 
     Returns: (is_leaf: bool, vegetation_fraction: float, reason: str)
     """
@@ -355,20 +363,32 @@ def is_leaf_present(img_bgr, min_vegetation_fraction=0.12):
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     hue, sat = hsv[:, :, 0], hsv[:, :, 1]
 
-    # Signal A — color: fraction of pixels plausibly "vegetation-colored".
-    # Broad on purpose: covers healthy green through diseased brown/yellow/tan tissue,
-    # not just healthy leaf color, since a diseased leaf is still a leaf.
-    green_range = (hue >= 25) & (hue <= 95) & (sat >= 40)
+    # Hard veto: if a face is detected anywhere in the frame, this is not a leaf photo.
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    faces = _face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
+    if len(faces) > 0:
+        return False, 0.0, "A face was detected in this image — this does not look like a leaf photo."
+
+    # Genuine green tissue/background — required on its own, not satisfied by brown/tan alone
+    # (skin tone and beige surfaces sit in a similar hue/saturation range to dried leaf tissue,
+    # so brown/tan can no longer qualify an image by itself).
+    green_mask = (hue >= 25) & (hue <= 95) & (sat >= 40)
+    green_fraction = np.count_nonzero(green_mask) / (h * w)
+
+    if green_fraction < min_green_fraction:
+        return False, green_fraction, "Not enough green plant tissue detected in the image."
+
+    # Combined vegetation fraction (green + diseased brown/tan) as a secondary, broader check —
+    # only relevant now that the green_fraction requirement above already ruled out skin/walls.
     brown_tan_range = (hue >= 8) & (hue <= 30) & (sat >= 30) & (sat <= 200)
-    vegetation_mask = green_range | brown_tan_range
+    vegetation_mask = green_mask | brown_tan_range
     vegetation_fraction = np.count_nonzero(vegetation_mask) / (h * w)
 
     if vegetation_fraction < min_vegetation_fraction:
-        return False, vegetation_fraction, "Not enough plant-colored (green/brown) area detected in the image."
+        return False, vegetation_fraction, "Not enough plant-colored area detected in the image."
 
-    # Signal B — segmentation sanity: GrabCut should find a distinct foreground object
-    # that's neither ~0% nor ~100% of the frame. A degenerate mask (all-or-nothing) means
-    # GrabCut couldn't isolate anything object-like, which is typical of non-leaf photos.
+    # Segmentation sanity: GrabCut should find a distinct foreground object that's neither
+    # ~0% nor ~100% of the frame.
     leaf_mask = segment_leaf(img_bgr)
     leaf_fraction = np.count_nonzero(leaf_mask) / (h * w)
     if leaf_fraction < 0.03 or leaf_fraction > 0.98:
