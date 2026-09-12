@@ -205,9 +205,16 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ============================================================
 # Model checkpoints are usually too large to commit to git. If they're not
 # present on disk, this downloads them from URLs supplied via Streamlit
-# secrets (e.g. a Hugging Face Hub / Google Drive / S3 direct-download
-# link) so the repo itself only needs to hold source code. Safe to leave
-# unused if you're providing the weights another way (e.g. Git LFS).
+# secrets. Hugging Face Hub "resolve" URLs (e.g.
+# https://huggingface.co/<user>/<repo>/resolve/main/<file>) work directly
+# with a plain download here — they're true direct-download links, unlike
+# a Google Drive share link, which serves an HTML warning page instead of
+# the file for anything it can't virus-scan.
+#
+# Required Streamlit secrets (Settings -> Secrets):
+#   HYBRID_CKPT_URL    -> resolve URL for hybrid_model.pth
+#   CLASS_NAMES_URL    -> resolve URL for class_names.json
+#   YOLO_CKPT_URL      -> resolve URL for lesion_detector_best.pt (optional)
 def _maybe_download_weights():
     url_map = {
         HYBRID_CKPT: "HYBRID_CKPT_URL",
@@ -230,7 +237,10 @@ def _maybe_download_weights():
             with st.spinner(f"Downloading {os.path.basename(local_path)}..."):
                 urllib.request.urlretrieve(url, local_path)
         except Exception as e:
-            st.warning(f"Could not download {local_path}: {e}")
+            if local_path == YOLO_CKPT:
+                st.info(f"Optional lesion detector not downloaded: {e}")
+            else:
+                st.warning(f"Could not download {local_path}: {e}")
 
 _maybe_download_weights()
 
@@ -736,6 +746,24 @@ with st.sidebar:
             for e in load_errors:
                 st.write("- " + e)
 
+    with st.expander("🔧 Diagnostics (checkpoint integrity)"):
+        for label, path in [("Hybrid checkpoint", HYBRID_CKPT), ("Class names", CLASS_NAMES_PATH), ("YOLO checkpoint", YOLO_CKPT)]:
+            if os.path.exists(path):
+                size_mb = os.path.getsize(path) / (1024 * 1024)
+                with open(path, "rb") as f:
+                    header = f.read(16)
+                looks_like_html = header.strip().lower().startswith((b"<!doctype", b"<html"))
+                st.write(f"**{label}**: {size_mb:.2f} MB — "
+                         f"{'⚠️ LOOKS LIKE AN HTML PAGE, NOT A REAL FILE' if looks_like_html else 'header OK'}")
+            else:
+                st.write(f"**{label}**: file not found on disk")
+
+        st.caption(
+            "If any file above is under ~1 MB and/or flagged as HTML, double-check that your "
+            "*_URL secrets point to Hugging Face 'resolve' links (not 'blob' links), and that "
+            "the repo is public (or that the URL includes a valid token if private)."
+        )
+
     if not GROQ_API_KEY:
         with st.expander("How to enable AI reports"):
             st.caption("Locally, set an environment variable:")
@@ -801,6 +829,7 @@ if input_image is not None:
             probs = torch.softmax(logits, dim=1)[0]
             top_idx = int(torch.argmax(probs).item())
             confidence = float(probs[top_idx].item()) * 100
+            top5_probs, top5_idx = torch.topk(probs, min(5, len(class_names)))
 
         predicted_class = class_names[top_idx]
         parts = predicted_class.split("___")
@@ -844,6 +873,16 @@ if input_image is not None:
             <span class="confidence-badge">{confidence:.1f}% confidence</span>
         </div>
         """, unsafe_allow_html=True)
+
+        with st.expander("🔧 Diagnostics — top 5 raw predictions"):
+            for p, idx in zip(top5_probs.tolist(), top5_idx.tolist()):
+                st.write(f"{class_names[idx]}: {p*100:.2f}%")
+            st.caption(
+                "If this same top-5 list (same classes, similar percentages) appears for "
+                "completely different input images, the model is not actually responding to "
+                "the image — check the diagnostics panel in the sidebar for a checkpoint file "
+                "problem."
+            )
 
         m1, m2 = st.columns(2)
         m1.metric("Model confidence", f"{confidence:.1f}%")
