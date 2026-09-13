@@ -350,8 +350,15 @@ def segment_leaf(img_bgr):
     kernel = np.ones((5, 5), np.uint8)
     return cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
 
+from pathlib import Path
 
-_face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+_face_cascade_path = (
+    Path(cv2.__file__).resolve().parent
+    / "data"
+    / "haarcascade_frontalface_default.xml"
+)
+
+_face_cascade = cv2.CascadeClassifier(str(_face_cascade_path))
 
 def is_leaf_present(img_bgr, min_green_fraction=0.05, min_vegetation_fraction=0.12):
     """
