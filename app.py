@@ -8,6 +8,7 @@ import json
 import os
 import re
 import datetime
+import hashlib
 from io import BytesIO
 from xml.sax.saxutils import escape
 
@@ -415,10 +416,23 @@ def estimate_severity(img_bgr, boxes_xyxy):
     healthy_green = ((hue >= 35) & (hue <= 85)).astype(np.uint8) * 255
     lesion_candidate = cv2.bitwise_and(cv2.bitwise_not(healthy_green), leaf_mask)
 
-    box_mask = np.zeros_like(leaf_mask)
-    for (x1, y1, x2, y2) in boxes_xyxy:
-        box_mask[int(y1):int(y2), int(x1):int(x2)] = 255
-    lesion_mask = cv2.bitwise_and(lesion_candidate, box_mask)
+    if len(boxes_xyxy) > 0:
+        # YOLO found lesion boxes — constrain the color-based candidate mask
+        # to those regions for a tighter estimate.
+        box_mask = np.zeros_like(leaf_mask)
+        for (x1, y1, x2, y2) in boxes_xyxy:
+            box_mask[int(y1):int(y2), int(x1):int(x2)] = 255
+        lesion_mask = cv2.bitwise_and(lesion_candidate, box_mask)
+    else:
+        # No YOLO boxes — either the detector isn't loaded, or it simply
+        # missed lesions on this image (it was only trained on pseudo-labels
+        # for 8 of the 38 classes). Previously this zeroed out lesion_mask
+        # entirely via bitwise_and with an all-zero box_mask, which silently
+        # forced severity to 0%/"mild" even on a leaf the classifier had just
+        # called diseased. Fall back to the color-based candidate mask
+        # directly instead, matching what the UI caption already claims
+        # ("severity uses color-based estimation only").
+        lesion_mask = lesion_candidate
 
     leaf_area = np.count_nonzero(leaf_mask)
     lesion_area = np.count_nonzero(lesion_mask)
@@ -502,6 +516,60 @@ Write in plain prose paragraphs only. Do not use markdown formatting of any kind
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
+            max_completion_tokens=500,
+        )
+
+        return response.choices[0].message.content, None
+
+    except Exception as e:
+        return None, str(e)
+
+
+def generate_groq_chat_reply(chat_history, crop, disease, confidence, severity_pct, severity_tier, is_healthy):
+    """Answer a follow-up question about the current diagnosis, using the
+    running chat_history (list of {"role": "user"/"assistant", "content": ...})
+    as conversation context."""
+    try:
+        from groq import Groq
+
+        if not GROQ_API_KEY:
+            return None, "No Groq API key configured. Set the GROQ_API_KEY environment variable."
+
+        client = Groq(api_key=GROQ_API_KEY)
+
+        if is_healthy:
+            context_line = (
+                f"The AI classifier examined a {crop} leaf and found no signs of disease "
+                f"(confidence {confidence:.1f}%)."
+            )
+        else:
+            context_line = (
+                f"The AI classifier examined a {crop} leaf and detected: {disease} "
+                f"(model confidence {confidence:.1f}%). Estimated affected leaf area: "
+                f"{severity_pct:.1f}% ({severity_tier} severity)."
+            )
+
+        system_prompt = f"""You are a knowledgeable, friendly agricultural assistant helping someone \
+understand an AI plant-disease diagnosis and decide what to do next.
+
+Diagnosis context for this conversation:
+{context_line}
+
+Answer the user's questions about this specific plant and diagnosis — what the condition is, what \
+causes it, how to treat or manage it, prevention, whether it can spread to other plants, expected \
+timelines, and similar practical topics. Keep answers concise, conversational, and specific to this \
+diagnosis. If the user asks about something unrelated to this plant or diagnosis, gently steer the \
+conversation back. When the conversation touches on treatment decisions (not every message), remind \
+the user this is an AI-assisted estimate and a local agricultural expert should confirm before major \
+treatment decisions."""
+
+        api_messages = [{"role": "system", "content": system_prompt}]
+        api_messages.extend(chat_history)
+
+        response = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=api_messages,
+            temperature=0.4,
             max_completion_tokens=500,
         )
 
@@ -778,20 +846,31 @@ with st.sidebar:
 
 
 # ============================================================
+# CHAT SESSION STATE
+# ============================================================
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []
+if "chat_image_key" not in st.session_state:
+    st.session_state.chat_image_key = None
+
+# ============================================================
 # INPUT
 # ============================================================
 tab_upload, tab_camera = st.tabs(["Upload Image", "Camera Snapshot"])
 
 input_image = None
+input_bytes = None
 with tab_upload:
     uploaded_file = st.file_uploader("Upload a leaf image", type=["jpg", "jpeg", "png"])
     if uploaded_file is not None:
+        input_bytes = uploaded_file.getvalue()
         input_image = Image.open(uploaded_file)
 
 with tab_camera:
     st.caption("Captures a single snapshot when you click the button below — not continuous live video.")
     camera_file = st.camera_input("Take a photo of the leaf")
     if camera_file is not None:
+        input_bytes = camera_file.getvalue()
         input_image = Image.open(camera_file)
 
 # ============================================================
@@ -858,6 +937,13 @@ if input_image is not None:
 
     is_healthy = "healthy" in disease.lower()
 
+    # Reset the chat whenever a different image has been analyzed, so
+    # follow-up questions never carry over context from a previous leaf.
+    _image_key = hashlib.md5(input_bytes).hexdigest() if input_bytes else None
+    if _image_key != st.session_state.chat_image_key:
+        st.session_state.chat_messages = []
+        st.session_state.chat_image_key = _image_key
+
     if confidence < 40:
         st.warning(
             f"The model's confidence for this prediction is low ({confidence:.1f}%). "
@@ -895,10 +981,12 @@ if input_image is not None:
                 f'<span class="severity-{severity_tier}-badge">Severity: {severity_tier.capitalize()}</span>',
                 unsafe_allow_html=True,
             )
-            st.caption(
-                f"{len(boxes)} lesion(s) detected by YOLO" if yolo_model is not None
-                else "Lesion detector not loaded — severity uses color-based estimation only."
-            )
+            if yolo_model is None:
+                st.caption("Lesion detector not loaded — severity uses color-based estimation only.")
+            elif len(boxes) > 0:
+                st.caption(f"{len(boxes)} lesion(s) detected by YOLO — severity estimated within those regions.")
+            else:
+                st.caption("YOLO detected no lesion boxes on this image — severity falls back to color-based estimation.")
         else:
             m2.metric("Affected leaf area", "0%")
             st.markdown(
@@ -977,6 +1065,47 @@ if input_image is not None:
             st.warning(
                 "Set the GROQ_API_KEY environment variable to enable AI-generated disease reports and PDF downloads."
             )
+
+    # ============================================================
+    # CHAT ABOUT THIS DIAGNOSIS
+    # ============================================================
+    st.divider()
+    st.markdown('<div class="section-heading"><i class="bi bi-chat-dots"></i>Ask About This Diagnosis</div>', unsafe_allow_html=True)
+
+    if not GROQ_API_KEY:
+        st.info("Set the GROQ_API_KEY environment variable to chat about this diagnosis.")
+    else:
+        topic = "this leaf" if is_healthy else disease
+
+        chat_box = st.container(height=420, border=True)
+        with chat_box:
+            if not st.session_state.chat_messages:
+                st.caption(
+                    f"Ask me anything about {topic} — causes, treatment, prevention, "
+                    "whether it spreads to other plants, and so on."
+                )
+            for msg in st.session_state.chat_messages:
+                avatar = "🧑‍🌾" if msg["role"] == "user" else "🌿"
+                with st.chat_message(msg["role"], avatar=avatar):
+                    st.markdown(msg["content"])
+
+        user_question = st.chat_input(f"Ask about {topic}...")
+        if user_question:
+            st.session_state.chat_messages.append({"role": "user", "content": user_question})
+            with st.spinner("Thinking..."):
+                reply, chat_error = generate_groq_chat_reply(
+                    st.session_state.chat_messages,
+                    crop, disease, confidence,
+                    severity_ratio * 100, severity_tier, is_healthy,
+                )
+            if reply:
+                st.session_state.chat_messages.append({"role": "assistant", "content": reply})
+            else:
+                st.session_state.chat_messages.append({
+                    "role": "assistant",
+                    "content": f"Sorry, I couldn't respond ({chat_error}). Please try again.",
+                })
+            st.rerun()
 
 else:
     st.info("Upload an image or take a photo to begin analysis.")

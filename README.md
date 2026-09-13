@@ -57,6 +57,12 @@ Upload `hybrid_model.pth`, `lesion_detector_best.pt`, and
 `class_names.json` somewhere with a direct-download URL (Hugging Face
 Hub, a public S3/GCS bucket, etc.), then add the URLs as secrets:
 
+> **Note:** the training notebook saves the YOLO checkpoint as
+> `yolo_runs/lesion_detector_pseudo/weights/best.pt`. Rename/copy it to
+> `lesion_detector_best.pt` before uploading — `app.py` looks for that
+> exact filename and treats the lesion detector as optional (not an
+> error) if it's missing under a different name.
+
 ```toml
 HYBRID_CKPT_URL = "https://.../hybrid_model.pth"
 YOLO_CKPT_URL = "https://.../lesion_detector_best.pt"
