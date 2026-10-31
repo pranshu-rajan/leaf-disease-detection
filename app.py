@@ -351,9 +351,35 @@ def segment_leaf(img_bgr):
     kernel = np.ones((5, 5), np.uint8)
     return cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
 
-_face_cascade = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-)
+def _load_face_cascade():
+    """Safely load Haar cascade classifier without crashing if OpenCV data or XML is missing."""
+    cascade_cls = getattr(cv2, "CascadeClassifier", None)
+    if cascade_cls is None:
+        return None
+
+    candidate_paths = [
+        os.path.join(os.path.dirname(__file__) if "__file__" in globals() else ".", "models", "haarcascade_frontalface_default.xml"),
+        os.path.join(MODELS_DIR, "haarcascade_frontalface_default.xml"),
+    ]
+
+    if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
+        candidate_paths.append(os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml"))
+
+    cv2_dir = os.path.dirname(getattr(cv2, "__file__", ""))
+    if cv2_dir:
+        candidate_paths.append(os.path.join(cv2_dir, "data", "haarcascade_frontalface_default.xml"))
+
+    for p in candidate_paths:
+        try:
+            if os.path.isfile(p):
+                clf = cascade_cls(p)
+                if not clf.empty():
+                    return clf
+        except Exception:
+            continue
+    return None
+
+_face_cascade = _load_face_cascade()
 
 def is_leaf_present(img_bgr, min_green_fraction=0.05, min_vegetation_fraction=0.12):
     """
@@ -376,10 +402,14 @@ def is_leaf_present(img_bgr, min_green_fraction=0.05, min_vegetation_fraction=0.
     hue, sat = hsv[:, :, 0], hsv[:, :, 1]
 
     # Hard veto: if a face is detected anywhere in the frame, this is not a leaf photo.
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    faces = _face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
-    if len(faces) > 0:
-        return False, 0.0, "A face was detected in this image — this does not look like a leaf photo."
+    if _face_cascade is not None:
+        try:
+            gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+            faces = _face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
+            if len(faces) > 0:
+                return False, 0.0, "A face was detected in this image — this does not look like a leaf photo."
+        except Exception:
+            pass
 
     # Genuine green tissue/background — required on its own, not satisfied by brown/tan alone
     # (skin tone and beige surfaces sit in a similar hue/saturation range to dried leaf tissue,
