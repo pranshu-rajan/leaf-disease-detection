@@ -38,8 +38,8 @@
   - [The Domain-Shift Reality Check: PlantVillage vs. PlantDoc](#the-domain-shift-reality-check-plantvillage-vs-plantdoc)
   - [Lesion Detection Metrics (YOLOv8)](#lesion-detection-metrics-yolov8)
   - [Edge Optimization: FP32 vs. INT8 Dynamic Quantization](#edge-optimization-fp32-vs-int8-dynamic-quantization)
-- [The Complete Training Notebook (`plant_leaf_disease.ipynb`)](#-the-complete-training-notebook-plant_leaf_diseaseipynb)
-  - [Can I push this notebook to GitHub? (GitHub Standards Guide)](#can-i-push-this-notebook-to-github-github-standards-guide)
+- [Model Training & Research Notebook (`plant_leaf_disease.ipynb`)](#-model-training--research-notebook-plant_leaf_diseaseipynb)
+  - [Reproducibility & Workflow](#reproducibility--workflow)
   - [Notebook Execution Walkthrough](#notebook-execution-walkthrough)
 - [Supported Crops & Disease Classes](#-supported-crops--disease-classes)
 - [Local Installation & Setup](#-local-installation--setup)
@@ -212,20 +212,16 @@ Trained on pseudo-labeled lesion coordinates generated via unsupervised GrabCut 
 
 ---
 
-## 📓 The Complete Training Notebook (`plant_leaf_disease.ipynb`)
+## 📓 Model Training & Research Notebook (`plant_leaf_disease.ipynb`)
 
-The entire end-to-end research, model training, ablation comparisons, explainability experiments, and quantization pipelines are documented in [`plant_leaf_disease.ipynb`](./plant_leaf_disease.ipynb) (69 cells, ~9.72 MB).
+The complete research process, model training routines, ablation studies, explainability experiments, and quantization pipelines are open-sourced in [`plant_leaf_disease.ipynb`](./plant_leaf_disease.ipynb) (69 cells, ~9.72 MB).
 
-### Can I push this notebook to GitHub? (GitHub Standards Guide)
+### Reproducibility & Workflow
 
-> **Yes, absolutely!** Pushing `plant_leaf_disease.ipynb` directly to GitHub is **100% compliant with GitHub repository standards**.
-
-Here is why and how GitHub manages files of this type:
-- **File Size Limit**: GitHub enforces a hard limit of **100 MB per file** and displays a warning at **50 MB**. At **~9.72 MB**, `plant_leaf_disease.ipynb` is well below both thresholds.
-- **Model Checkpoints vs. Notebooks**:
-  - `plant_leaf_disease.ipynb` (~9.72 MB) $\rightarrow$ **Should be committed to Git**. It contains your code, training logs, ablation tables, and visualization outputs.
-  - `hybrid_model.pth` (171.8 MB) $\rightarrow$ **Exceeds GitHub's 100 MB hard limit**. It is properly listed in [`.gitignore`](./.gitignore) and is dynamically downloaded on startup using cloud direct-download URLs (Hugging Face Hub / AWS S3).
-- **GitHub Notebook Rendering**: Because the notebook contains rich matplotlib figures (confusion matrices, Grad-CAM galleries), GitHub's inline viewer may occasionally take a moment to render. You can also view it directly through [nbviewer.org](https://nbviewer.org/) or launch it in Google Colab.
+The notebook is fully self-contained and ready to execute on GPU environments such as Google Colab or Kaggle:
+- **Self-Contained Pipeline**: Includes automated dataset ingestion, CLAHE preprocessing, model definition, training loops, checkpointing, and statistical validation.
+- **Rich Visual Diagnostics**: Contains embedded training loss/accuracy curves, multi-class confusion matrices, Grad-CAM++ heatmaps, and lesion bounding box visualizations.
+- **Decoupled Architecture**: Code and training logs are tracked directly in Git, while large model weights (`.pth` / `.pt`) are loaded dynamically from cloud storage on startup.
 
 ### Notebook Execution Walkthrough
 
